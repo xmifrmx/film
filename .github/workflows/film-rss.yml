@@ -28,7 +28,7 @@ jobs:
       TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
       # Fragman gösterimi: "thumb" = tıklanabilir önizleme görseli (Blogger'a RSS ile aktarırken en güvenlisi),
       # "iframe" = gömülü YouTube oynatıcı (yalnızca HTML'i olduğu gibi alan araçlarda oynar)
-      VIDEO_MODE: iframe
+      VIDEO_MODE: thumb
       PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
