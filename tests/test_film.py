@@ -106,10 +106,15 @@ class TestArticle(unittest.TestCase):
         rec, body = f.build_article(detail(7, title="Av. Mahsun Karaca: Sana İnanıyorum", tagline="Slogan <x>"),
                                     "now_playing", NOW)
         self.assertTrue(body.lstrip().startswith('<div class="separator"'))
-        for h in ("Fragmanı</h2>", "Film Bilgileri</h2>", "Konusu</h2>", "Oyuncuları</h2>"):
+        for h in ("Film Bilgileri</h2>", "Konusu</h2>", "Oyuncuları</h2>"):
             self.assertIn(h, body)
         self.assertNotIn("<h1", body.lower())
+        self.assertNotIn("Fragmanı</h2>", body)
         self.assertIn("https://www.youtube.com/embed/abcDEF12345", body)
+        self.assertIn("https://www.youtube.com/watch?v=abcDEF12345", body)
+        # video, Konusu bölümünün içinde (Oyuncuları başlığından önce, Konusu başlığından sonra)
+        self.assertLess(body.index("Konusu</h2>"), body.index("<iframe"))
+        self.assertLess(body.index("<iframe"), body.index("Oyuncuları</h2>"))
         self.assertIn("1 saat 43 dakika", body)
         self.assertIn("Türkiye", body)
         self.assertIn("13 Kasım 2026", body)
@@ -134,8 +139,19 @@ class TestArticle(unittest.TestCase):
     def test_gaps(self):
         rec, body = f.build_article(detail(1, videos={"results": []}, credits={"cast": [], "crew": []}), "upcoming", NOW)
         self.assertEqual(sorted(rec["gaps"]), ["fragman", "oyuncu"])
-        self.assertIn("Fragman henüz yayınlanmadı", body)
         self.assertNotIn("<iframe", body)
+        self.assertNotIn("youtube.com", body)
+
+    def test_thumb_mode(self):
+        old = f.VIDEO_MODE
+        f.VIDEO_MODE = "thumb"
+        try:
+            _, body = f.build_article(detail(1), "now_playing", NOW)
+        finally:
+            f.VIDEO_MODE = old
+        self.assertNotIn("<iframe", body)
+        self.assertIn("https://img.youtube.com/vi/abcDEF12345/hqdefault.jpg", body)
+        self.assertIn("https://www.youtube.com/watch?v=abcDEF12345", body)
 
     def test_cast_without_photo_and_limit(self):
         cast = [{"name": f"Oyuncu {i}", "character": "", "order": i, "profile_path": None} for i in range(30)]
@@ -232,6 +248,30 @@ class TestPipeline(Base):
         open(p, "w").write("{bozuk")
         res = self.run_it(api)                                                          # .bak'tan devam eder
         self.assertEqual(res["new"], 1)
+
+
+class TestMain(Base):
+    def setUp(self):
+        super().setUp()
+        self.saved = (f.TMDB_API_KEY, f.Api)
+
+    def tearDown(self):
+        f.TMDB_API_KEY, f.Api = self.saved
+        super().tearDown()
+
+    def test_exit_codes(self):
+        f.TMDB_API_KEY = ""
+        self.assertEqual(f.main(["--root", self.root]), 2)                               # anahtar yok
+        f.TMDB_API_KEY = "k"
+        f.Api = lambda key: FakeApi({"now_playing": [1], "upcoming": [2]}, {1: detail(1), 2: detail(2)})
+        self.assertEqual(f.main(["--root", self.root]), 0)
+        self.assertEqual(len(self.items()[1]), 2)
+        f.Api = lambda key: FakeApi({"now_playing": f.TmdbError("x"), "upcoming": f.TmdbError("y")}, {})
+        self.assertEqual(f.main(["--root", self.root]), 1)                               # TMDB erişilemez: iş kırmızı biter, eski RSS yayında kalır
+        self.assertEqual(len(self.items()[1]), 2)                                        # mevcut rss.xml bozulmadı
+        shutil.rmtree(os.path.join(self.root, "data"))
+        os.remove(os.path.join(self.root, "rss.xml"))
+        self.assertEqual(f.main(["--root", self.root]), 1)                               # liste yok, kayıt yok
 
 
 class _Resp(io.BytesIO):
