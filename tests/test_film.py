@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import os
@@ -11,6 +12,34 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import filmrss as f  # noqa: E402
+
+_SAVED = {}
+_DEFAULTS = dict(VIDEO_MODE="iframe", MIN_OVERVIEW_CHARS=80, CAST_LIMIT=12, FEED_ITEMS=100, MAX_PAGES=3,
+                 FILMS_PER_RUN=0, MAX_SKIP_ATTEMPTS=6, RECHECK_DAYS=7, CONTENT_KEEP_DAYS=30,
+                 LISTS=("now_playing", "upcoming"))
+
+
+def setUpModule():
+    """Workflow'daki ortam değişkenleri (VIDEO_MODE, FEED_ITEMS, ...) testlerin sonucunu değiştirmesin."""
+    for k, v in _DEFAULTS.items():
+        _SAVED[k] = getattr(f, k)
+        setattr(f, k, v)
+
+
+def tearDownModule():
+    for k, v in _SAVED.items():
+        setattr(f, k, v)
+
+
+def read_json(path):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def read_text(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
 
 NS = {"c": "http://purl.org/rss/1.0/modules/content/", "m": "http://search.yahoo.com/mrss/"}
 OVERVIEW = ("Ben Sana İnanıyorum, işgüzar avukat Mahsun'un beklediği saygın kariyerin aksine, kendisini bir anda "
@@ -190,11 +219,11 @@ class TestPipeline(Base):
     def test_skip_then_retry_then_stop(self):
         api = FakeApi({"now_playing": [5]}, {5: detail(5, overview="kısa")})
         self.run_it(api)
-        self.assertEqual(json.load(open(os.path.join(self.root, "data", "index.json")))["skips"]["5"]["n"], 1)
+        self.assertEqual(read_json(os.path.join(self.root, "data", "index.json"))["skips"]["5"]["n"], 1)
         api.details[5] = detail(5)                                   # konu sonradan eklendi
         res = self.run_it(api)
         self.assertEqual(res["new"], 1)
-        self.assertNotIn("5", json.load(open(os.path.join(self.root, "data", "index.json")))["skips"])
+        self.assertNotIn("5", read_json(os.path.join(self.root, "data", "index.json"))["skips"])
         # sürekli kısa kalan film en fazla MAX_SKIP_ATTEMPTS kez denenir
         api2 = FakeApi({"now_playing": [9, 1]}, {9: detail(9, overview="kısa"), 1: detail(1)})
         for _ in range(f.MAX_SKIP_ATTEMPTS + 3):
@@ -226,11 +255,11 @@ class TestPipeline(Base):
 
     def test_empty_never_overwrites_good_rss(self):
         self.run_it(FakeApi({"now_playing": [1]}, {1: detail(1)}))
-        before = open(os.path.join(self.root, "rss.xml"), encoding="utf-8").read()
+        before = read_text(os.path.join(self.root, "rss.xml"))
         os.remove(os.path.join(self.root, "data", "content", "1.html"))                 # içerik kaybı
         res = self.run_it(FakeApi({"now_playing": []}, {}))
         self.assertEqual(res["in_feed"], 0)
-        self.assertEqual(open(os.path.join(self.root, "rss.xml"), encoding="utf-8").read(), before)
+        self.assertEqual(read_text(os.path.join(self.root, "rss.xml")), before)
 
     def test_old_content_pruned_but_record_kept(self):
         self.run_it(FakeApi({"now_playing": [1]}, {1: detail(1)}))
@@ -239,13 +268,14 @@ class TestPipeline(Base):
         self.run_it(api, now=later)
         self.assertFalse(os.path.exists(os.path.join(self.root, "data", "content", "1.html")))
         self.assertEqual(api.detail_calls, [2])                                          # 1 tekrar üretilmedi
-        self.assertEqual(len(json.load(open(os.path.join(self.root, "data", "index.json")))["articles"]), 2)
+        self.assertEqual(len(read_json(os.path.join(self.root, "data", "index.json"))["articles"]), 2)
 
     def test_count_limit_and_corrupt_index_backup(self):
         api = FakeApi({"now_playing": [1, 2, 3]}, {i: detail(i) for i in (1, 2, 3)})
         self.assertEqual(self.run_it(api, limit=2)["new"], 2)
         p = os.path.join(self.root, "data", "index.json")
-        open(p, "w").write("{bozuk")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("{bozuk")
         res = self.run_it(api)                                                          # .bak'tan devam eder
         self.assertEqual(res["new"], 1)
 
@@ -259,19 +289,23 @@ class TestMain(Base):
         f.TMDB_API_KEY, f.Api = self.saved
         super().tearDown()
 
+    def main(self):
+        with contextlib.redirect_stdout(io.StringIO()):          # '::error::' satırları Actions günlüğünü kirletmesin
+            return f.main(["--root", self.root])
+
     def test_exit_codes(self):
         f.TMDB_API_KEY = ""
-        self.assertEqual(f.main(["--root", self.root]), 2)                               # anahtar yok
+        self.assertEqual(self.main(), 2)                               # anahtar yok
         f.TMDB_API_KEY = "k"
         f.Api = lambda key: FakeApi({"now_playing": [1], "upcoming": [2]}, {1: detail(1), 2: detail(2)})
-        self.assertEqual(f.main(["--root", self.root]), 0)
+        self.assertEqual(self.main(), 0)
         self.assertEqual(len(self.items()[1]), 2)
         f.Api = lambda key: FakeApi({"now_playing": f.TmdbError("x"), "upcoming": f.TmdbError("y")}, {})
-        self.assertEqual(f.main(["--root", self.root]), 1)                               # TMDB erişilemez: iş kırmızı biter, eski RSS yayında kalır
+        self.assertEqual(self.main(), 1)                               # TMDB erişilemez: iş kırmızı biter, eski RSS yayında kalır
         self.assertEqual(len(self.items()[1]), 2)                                        # mevcut rss.xml bozulmadı
         shutil.rmtree(os.path.join(self.root, "data"))
         os.remove(os.path.join(self.root, "rss.xml"))
-        self.assertEqual(f.main(["--root", self.root]), 1)                               # liste yok, kayıt yok
+        self.assertEqual(self.main(), 1)                               # liste yok, kayıt yok
 
 
 class _Resp(io.BytesIO):
