@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+_site/
+
+# Üretilen çıktılar git'e girmez (Actions önbelleği + Pages kullanılır)
+data/
+rss.xml
