@@ -8,6 +8,7 @@ Puan, buton, yorum gibi alanlar hiç alınmaz.
 * Aynı film (TMDB kimliği) bir daha asla üretilmez; kayıt data/index.json içindedir (Actions önbelleği).
 * Konusu kısa/afişi yok filmler atlanır ve sonraki çalışmalarda (en fazla MAX_SKIP_ATTEMPTS kez) yeniden denenir.
 * Fragmanı ya da oyuncu listesi henüz yoksa makale yine yayınlanır, RECHECK_DAYS gün boyunca aynı kimlikle tamamlanır.
+* Makale biçimi (BUILD_VERSION) ya da VIDEO_MODE değişirse son CONTENT_KEEP_DAYS gündeki makaleler aynı kimlikle bir kez yeniden derlenir.
 
 Gerekli ortam değişkeni: TMDB_API_KEY (v3 anahtarı ya da v4 "API Read Access Token").
 """
@@ -57,7 +58,7 @@ MAX_SKIP_ATTEMPTS = _int("MAX_SKIP_ATTEMPTS", 6)
 RECHECK_DAYS = _int("RECHECK_DAYS", 7)               # eksik (fragman/oyuncu) makaleler için geriye bakış
 CONTENT_KEEP_DAYS = _int("CONTENT_KEEP_DAYS", 30)    # makale HTML dosyaları bu kadar gün saklanır
 VIDEO_MODE = (os.environ.get("VIDEO_MODE") or "iframe").strip().lower()   # iframe | thumb (iframe'i silen okuyucular için)
-BUILD_VERSION = 1
+BUILD_VERSION = 2          # makale HTML biçimi sürümü; artmışsa eski makaleler aynı kimlikle bir kez yeniden derlenir
 IMG = "https://image.tmdb.org/t/p"
 
 COUNTRIES = {
@@ -289,7 +290,7 @@ def build_article(d, kind, now, keep=None):
     stamp = lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     title_out = f"{title} Filmi: Fragman, Konu ve Oyuncular"
     rec = {
-        "id": f"film-{mid}", "tmdb_id": mid, "kind": kind, "v": BUILD_VERSION,
+        "id": f"film-{mid}", "tmdb_id": mid, "kind": kind, "v": BUILD_VERSION, "vm": VIDEO_MODE,
         "pub": stamp(now), "date": now.strftime("%Y-%m-%d"),
         "title": title_out if len(title_out) <= 110 else title,
         "link": link, "description": shorten(overview), "gaps": gaps,
@@ -493,25 +494,33 @@ def run(root=None, api=None, now=None, limit=None, log=print):
         first = False
         log(f"+ {rec['title']}" + (f"  eksik={rec['gaps']}" if rec["gaps"] else ""))
 
-    # fragman / oyuncu sonradan gelen filmleri aynı kimlikle tamamla
-    floor = (now - timedelta(days=RECHECK_DAYS)).strftime("%Y-%m-%d")
+    # (1) fragman / oyuncu sonradan gelen filmleri, (2) biçimi eskimiş (BUILD_VERSION / VIDEO_MODE değişmiş)
+    # makaleleri aynı kimlik ve yayın zamanıyla yeniden derle
+    gap_floor = (now - timedelta(days=RECHECK_DAYS)).strftime("%Y-%m-%d")
+    fmt_floor = (now - timedelta(days=CONTENT_KEEP_DAYS)).strftime("%Y-%m-%d")
     fresh, updated = {r["id"] for r in new}, 0
     for r in arts:
-        if not r.get("gaps") or r["date"] < floor or r["id"] in fresh:
+        if r["id"] in fresh:
+            continue
+        fmt_stale = r.get("v", 0) < BUILD_VERSION or r.get("vm") != VIDEO_MODE
+        need_gap = bool(r.get("gaps")) and r["date"] >= gap_floor
+        if not (need_gap or (fmt_stale and r["date"] >= fmt_floor)):
             continue
         try:
             d = api.movie_detail(r["tmdb_id"])
         except TmdbError as e:
-            log(f"::warning::tamamlama için film alınamadı ({r['tmdb_id']}): {e}")
+            log(f"::warning::yeniden derleme için film alınamadı ({r['tmdb_id']}): {e}")
             continue
         rec, extra = build_article(d, r.get("kind", "now_playing"), now, keep=r)
-        if rec is None or len(rec["gaps"]) >= len(r["gaps"]):
-            continue
+        if rec is None or len(rec["gaps"]) > len(r.get("gaps") or []):
+            continue                                       # yeni derleme daha eksik: eski içerik korunur
+        if not fmt_stale and len(rec["gaps"]) == len(r.get("gaps") or []):
+            continue                                       # eksik tamamlanmadı, biçim güncel: değişiklik yok
         write_text(os.path.join(root, rec["content_file"]), extra)
         r.clear()
         r.update(rec)
         updated += 1
-        log(f"~ tamamlandı: {rec['title']}  (kalan eksik: {rec['gaps'] or 'yok'})")
+        log(f"~ yenilendi: {rec['title']}  (kalan eksik: {rec['gaps'] or 'yok'})")
 
     # eski içerik dosyalarını temizle (kayıt kalır: aynı film tekrar üretilmez)
     old = (now - timedelta(days=CONTENT_KEEP_DAYS)).strftime("%Y-%m-%d")
