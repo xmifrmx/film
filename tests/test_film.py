@@ -246,6 +246,40 @@ class TestPipeline(Base):
         self.run_it(api, now=datetime(2026, 11, 23, 6, 0, 0, tzinfo=timezone.utc))      # eksik kalmadı: yeniden denenmez
         self.assertEqual(len(api.detail_calls), calls)
 
+    def test_old_format_and_mode_change_rebuild_same_identity(self):
+        api = FakeApi({"now_playing": [8]}, {8: detail(8)})
+        old = f.VIDEO_MODE
+        try:
+            f.VIDEO_MODE = "iframe"
+            self.run_it(api)
+            _, items = self.items()
+            guid, pub = items[0].find("guid").text, items[0].find("pubDate").text
+            self.assertIn("<iframe", items[0].find("c:encoded", NS).text)
+            calls = len(api.detail_calls)
+            self.run_it(api)                                                   # değişiklik yok: yeniden derlenmez
+            self.assertEqual(len(api.detail_calls), calls)
+            f.VIDEO_MODE = "thumb"                                             # mod değişti: aynı kimlikle yenilenir
+            res = self.run_it(api)
+            self.assertEqual(res["updated"], 1)
+            _, items = self.items()
+            html_ = items[0].find("c:encoded", NS).text
+            self.assertNotIn("<iframe", html_)
+            self.assertIn("img.youtube.com/vi/", html_)
+            self.assertEqual((items[0].find("guid").text, items[0].find("pubDate").text), (guid, pub))
+            self.run_it(api)                                                   # yenilendikten sonra tekrar yok
+            self.assertEqual(self.run_it(api)["updated"], 0)
+            # eski sürüm (v1, 'vm' alanı yok) kayıt: bir kez yeniden derlenir
+            p = os.path.join(self.root, "data", "index.json")
+            data = read_json(p)
+            data["articles"][0]["v"] = 1
+            data["articles"][0].pop("vm")
+            with open(p, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            self.assertEqual(self.run_it(api)["updated"], 1)
+            self.assertEqual(self.run_it(api)["updated"], 0)
+        finally:
+            f.VIDEO_MODE = old
+
     def test_api_errors_do_not_kill_run(self):
         api = FakeApi({"now_playing": [1, 2], "upcoming": f.TmdbError("liste hatası")},
                       {1: f.TmdbError("x"), 2: detail(2)})
