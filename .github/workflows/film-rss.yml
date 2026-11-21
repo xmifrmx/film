@@ -1,0 +1,93 @@
+name: Film RSS (TMDB)
+
+on:
+  schedule:
+    - cron: "17 3 * * *"    # 06:17 (TSİ) – ana çalışma
+    - cron: "47 11 * * *"   # 14:47 (TSİ) – eksikleri tamamlar
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "Bu çalışmada en fazla yeni film (boş = sınırsız)"
+        required: false
+
+# Depoya hiçbir şey yazılmaz; yalnızca rss.xml GitHub Pages'e dağıtılır.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: film-rss
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # RSS adresi bu depodan otomatik belirlenir: https://KULLANICI.github.io/DEPO/rss.xml
+      - name: Site adresini belirle
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          name="${GITHUB_REPOSITORY#*/}"
+          if [ "${name,,}" = "$owner.github.io" ]; then url="https://$owner.github.io"; else url="https://$owner.github.io/$name"; fi
+          echo "SITE_URL=$url" >> "$GITHUB_ENV"
+          echo "WIKI_CONTACT=https://github.com/$GITHUB_REPOSITORY" >> "$GITHUB_ENV"
+          echo "RSS adresi: $url/rss.xml" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Yayımlanan filmlerin kaydı (data/index.json: aynı film bir daha üretilmesin) git yerine önbellekte tutulur
+      - name: Önceki durumu geri yükle
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: film-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            film-
+
+      - name: Testler
+        run: python -m unittest tests.test_film
+
+      - name: RSS ve makaleleri üret
+        id: gen
+        env:
+          IN_COUNT: ${{ inputs.count }}
+        run: |
+          mkdir -p data/content
+          args=()
+          [ -n "$IN_COUNT" ] && args+=(--count "$IN_COUNT")
+          python filmrss.py "${args[@]}"
+
+      - name: Durumu önbelleğe kaydet
+        if: ${{ always() && steps.gen.conclusion != 'skipped' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: film-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Yayın klasörünü hazırla
+        run: |
+          mkdir -p _site
+          cp rss.xml _site/rss.xml
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.dep.outputs.page_url }}
+    steps:
+      - id: dep
+        uses: actions/deploy-pages@v4
