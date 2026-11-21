@@ -56,6 +56,7 @@ MIN_OVERVIEW_CHARS = _int("MIN_OVERVIEW_CHARS", 80)  # bundan kısa konu = makal
 MAX_SKIP_ATTEMPTS = _int("MAX_SKIP_ATTEMPTS", 6)
 RECHECK_DAYS = _int("RECHECK_DAYS", 7)               # eksik (fragman/oyuncu) makaleler için geriye bakış
 CONTENT_KEEP_DAYS = _int("CONTENT_KEEP_DAYS", 30)    # makale HTML dosyaları bu kadar gün saklanır
+VIDEO_MODE = (os.environ.get("VIDEO_MODE") or "iframe").strip().lower()   # iframe | thumb (iframe'i silen okuyucular için)
 BUILD_VERSION = 1
 IMG = "https://image.tmdb.org/t/p"
 
@@ -219,21 +220,26 @@ def build_article(d, kind, now, keep=None):
 
     tag = " ".join((d.get("tagline") or "").split())
     if tag:
-        out.append(f"<p><i>{esc(tag)}</i></p>")
+        out.append(f"<p><i>{esc(tag, quote=False)}</i></p>")
 
-    # --- fragman
-    out.append(f"<h2>{t} Fragmanı</h2>")
+    # --- fragman (Konusu bölümünün içine gömülür)
+    video = ""
     tr = pick_trailer(d)
     if tr:
         k = tr["key"]
-        out.append(f'<div class="separator" style="clear: both; text-align: center;">'
-                   f'<iframe allowfullscreen="allowfullscreen" frameborder="0" height="394" loading="lazy" '
-                   f'src="https://www.youtube.com/embed/{k}" title="{t} fragmanı" width="700"></iframe></div>'
-                   f'<p><a href="https://www.youtube.com/watch?v={k}" rel="noopener" target="_blank">'
-                   f'{t} fragmanını YouTube\'da izle</a></p>')
+        watch = f"https://www.youtube.com/watch?v={k}"
+        if VIDEO_MODE == "thumb":        # iframe'i silen okuyucular için: tıklanabilir önizleme görseli
+            video = (f'<p style="text-align: center;"><a href="{watch}" rel="noopener" target="_blank">'
+                     f'<img alt="{t} fragmanını izle" height="360" src="https://img.youtube.com/vi/{k}/hqdefault.jpg" '
+                     f'style="max-width: 100%; height: auto;" width="480" /></a></p>')
+        else:
+            video = (f'<div class="separator" style="clear: both; text-align: center;">'
+                     f'<iframe allowfullscreen="allowfullscreen" frameborder="0" height="394" loading="lazy" '
+                     f'src="https://www.youtube.com/embed/{k}" title="{t} fragmanı" width="700"></iframe></div>')
+        video += (f'<p style="text-align: center;"><a href="{watch}" rel="noopener" target="_blank">'
+                  f'{t} fragmanını YouTube\'da izle</a></p>')
     else:
         gaps.append("fragman")
-        out.append("<p>Fragman henüz yayınlanmadı.</p>")
 
     # --- film bilgileri
     year = (d.get("release_date") or "")[:4]
@@ -247,11 +253,13 @@ def build_article(d, kind, now, keep=None):
     rows += [("Yönetmen", ", ".join(_people(d, ("Director",), 3))),
              ("Senarist", ", ".join(_people(d, ("Screenplay", "Writer"), 3)))]
     out.append(f"<h2>{t} Film Bilgileri</h2>")
-    out.append("<p>" + "<br />".join(f"<b>{lbl}:</b> {esc(val)}" for lbl, val in rows if val) + "</p>")
+    out.append("<p>" + "<br />".join(f"<b>{lbl}:</b> {esc(val, quote=False)}" for lbl, val in rows if val) + "</p>")
 
     # --- konu
     out.append(f"<h2>{t} Konusu</h2>")
-    out += [f"<p>{esc(p)}</p>" for p in paras]
+    out += [f"<p>{esc(p, quote=False)}</p>" for p in paras]
+    if video:
+        out.append(video)
 
     # --- oyuncular
     cast = sorted((d.get("credits") or {}).get("cast", []), key=lambda c: c.get("order", 999))
